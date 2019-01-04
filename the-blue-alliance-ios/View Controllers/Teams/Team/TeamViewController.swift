@@ -5,13 +5,17 @@ import UIKit
 
 class TeamViewController: MyTBAContainerViewController, Observable {
 
-    private(set) var team: Team
+    private(set) var team: Team?
+    private(set) var teamKey: TeamKey
+    private let statusService: StatusService
+    private let urlOpener: URLOpener
 
     private(set) var infoViewController: TeamInfoViewController
     private(set) var eventsViewController: TeamEventsViewController
     private(set) var mediaViewController: TeamMediaCollectionViewController
 
     override var subscribableModel: MyTBASubscribable {
+        // Uhhhh can we make a *Team Key* subscribable?
         return team
     }
 
@@ -39,17 +43,32 @@ class TeamViewController: MyTBAContainerViewController, Observable {
 
     // MARK: Init
 
-    init(team: Team, statusService: StatusService, urlOpener: URLOpener, myTBA: MyTBA, persistentContainer: NSPersistentContainer, tbaKit: TBAKit, userDefaults: UserDefaults) {
-        self.team = team
+    convenience init(team: Team, statusService: StatusService, urlOpener: URLOpener, myTBA: MyTBA, persistentContainer: NSPersistentContainer, tbaKit: TBAKit, userDefaults: UserDefaults) {
+        self.init(team: team, teamKey: team.teamKey, statusService: statusService, urlOpener: urlOpener, myTBA: myTBA, persistentContainer: persistentContainer, tbaKit: tbaKit, userDefaults: userDefaults)
+    }
+
+    init(team: Team? = nil, teamKey: TeamKey, statusService: StatusService, urlOpener: URLOpener, myTBA: MyTBA, persistentContainer: NSPersistentContainer, tbaKit: TBAKit, userDefaults: UserDefaults) {
+        if let team = team {
+            self.team = team
+        } else {
+            // See if we can get the Team from the TeamKey
+            self.team = teamKey.team
+        }
+        self.teamKey = teamKey
+        self.statusService = statusService
+        self.urlOpener = urlOpener
+        // AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
         self.year = TeamViewController.latestYear(statusService: statusService, years: team.yearsParticipated)
 
         infoViewController = TeamInfoViewController(team: team, urlOpener: urlOpener, persistentContainer: persistentContainer, tbaKit: tbaKit, userDefaults: userDefaults)
         eventsViewController = TeamEventsViewController(team: team, year: year, persistentContainer: persistentContainer, tbaKit: tbaKit, userDefaults: userDefaults)
         mediaViewController = TeamMediaCollectionViewController(team: team, year: year, persistentContainer: persistentContainer, tbaKit: tbaKit, userDefaults: userDefaults)
 
+        let teamNumber = teamKey.teamNumber
+
         super.init(
             viewControllers: [infoViewController, eventsViewController, mediaViewController],
-            navigationTitle: "Team \(team.teamNumber!.stringValue)",
+            navigationTitle: "Team \(teamKey.teamNumber)",
             navigationSubtitle: ContainerViewController.yearSubtitle(year),
             segmentedControlTitles: ["Info", "Events", "Media"],
             myTBA: myTBA,
@@ -62,13 +81,7 @@ class TeamViewController: MyTBAContainerViewController, Observable {
         eventsViewController.delegate = self
         mediaViewController.delegate = self
 
-        contextObserver.observeObject(object: team, state: .updated) { [unowned self] (team, _) in
-            if self.year == nil {
-                self.year = TeamViewController.latestYear(statusService: statusService, years: team.yearsParticipated)
-            } else {
-                self.updateInterface()
-            }
-        }
+        setupObservers()
     }
 
     required init?(coder aDecoder: NSCoder) {
@@ -91,6 +104,24 @@ class TeamViewController: MyTBAContainerViewController, Observable {
 
     // MARK: - Private
 
+    private func setupObservers() {
+        if let team = team {
+            contextObserver.observeObject(object: team, state: .updated) { [unowned self] (team, _) in
+                if self.year == nil {
+                    self.year = TeamViewController.latestYear(statusService: self.statusService, years: team.yearsParticipated)
+                } else {
+                    self.updateInterface()
+                }
+            }
+        } else {
+            let predicate = Team.predicate(key: teamKey.key!)
+            contextObserver.observeInsertions(matchingPredicate: predicate) { [unowned self] (teams) in
+                self.team = teams.first
+                self.setupObservers()
+            }
+        }
+    }
+
     private static func latestYear(statusService: StatusService, years: [Int]?) -> Int? {
         if let years = years, !years.isEmpty {
             // Limit default year set to be <= currentSeason
@@ -112,7 +143,7 @@ class TeamViewController: MyTBAContainerViewController, Observable {
 
     private func refreshYearsParticipated() {
         var request: URLSessionDataTask?
-        request = tbaKit.fetchTeamYearsParticipated(key: team.key!, completion: { (years, error) in
+        request = tbaKit.fetchTeamYearsParticipated(key: teamKey.key!, completion: { (years, error) in
             let context = self.persistentContainer.newBackgroundContext()
             context.performChangesAndWait({
                 if let years = years {
@@ -126,7 +157,7 @@ class TeamViewController: MyTBAContainerViewController, Observable {
     }
 
     private func showSelectYear() {
-        guard let yearsParticipated = team.yearsParticipated, !yearsParticipated.isEmpty else {
+        guard let team = team, let yearsParticipated = team.yearsParticipated, !yearsParticipated.isEmpty else {
             return
         }
 
@@ -190,7 +221,7 @@ extension TeamViewController: SelectTableViewControllerDelegate {
 extension TeamViewController: EventsViewControllerDelegate {
 
     func eventSelected(_ event: Event) {
-        let teamAtEventViewController = TeamAtEventViewController(teamKey: team.teamKey, event: event, myTBA: myTBA, persistentContainer: persistentContainer, tbaKit: tbaKit, userDefaults: userDefaults)
+        let teamAtEventViewController = TeamAtEventViewController(teamKey: teamKey, event: event, myTBA: myTBA, showDetailEvent: true, showDetailTeam: false, statusService: statusService, urlOpener: urlOpener, persistentContainer: persistentContainer, tbaKit: tbaKit, userDefaults: userDefaults)
         self.navigationController?.pushViewController(teamAtEventViewController, animated: true)
     }
 
